@@ -7,6 +7,7 @@ library(shinydashboard)
 library(shinyIncubator)
 library(shinyWidgets)
 library(ggplot2)
+library(plotly)
 
  
 options(shiny.maxRequestSize=30*1024^2)  # max-csv upload set to 30 MB
@@ -41,7 +42,7 @@ ui <- dashboardPage(skin="red",
 # Select Enrichr Database
             
             selectInput('database', label = 'Select Enrichr database(s)', 
-                       choices = dbs,multiple=T),
+                       choices = dbs$libraryName,multiple=T),
           
 # Set Rank in Single DB
           
@@ -83,14 +84,35 @@ ui <- dashboardPage(skin="red",
              
               tabPanel("Instructions",tags$img(src="Example.input.png",height=600,width=900)),
              
-              tabPanel("Your Modules",DT::dataTableOutput("Modules"),br(),textOutput("Mess")),
+              tabPanel("Your Modules",
+                       
+                       
+                       plotOutput("modsummary_plot"),
+                       
+                       br(),
+                       
+                       DT::dataTableOutput("Modules"),
+                       
+                       br(),
+  
+                       textOutput("Mess")),
              
               tabPanel("Single-DB function",div(DT::dataTableOutput("GO"),
                        style="font-size: 75%; width: 50%")),
              
               tabPanel("Multi-DB function",DT::dataTableOutput("Multi")),
               
-              tabPanel("Plots",plotOutput("Bubble"),plotOutput("Ontology"))
+              tabPanel("Plots",
+                       
+                       uiOutput("bubble_databases"),
+                       
+                       textOutput("clickevent"),
+                       
+                       plotlyOutput("Bubble"),
+                       DTOutput("bubbleDT"),
+                       DTOutput("bubble_table"),
+                       
+                       plotOutput("Ontology"))
             )
       
          )
@@ -111,18 +133,39 @@ modules <- reactive({
 
 output$Modules <- 
   
-  DT::renderDataTable({head(modules(),n=10)})
+  DT::renderDT({
+    modules()
+    },filter="top",rownames=FALSE,options=list(pageLength=100)
+  )
 
-output$Mess <- renderText({"Upload CSV to see your gene list here"})                      
+output$Mess <- renderText({
+  if(is.null(modules())==F){
+  "Upload CSV to see your gene list here"
+    }
+  })                      
   #output$Mess <- renderText("ok")
   
+
+  # Module summary
+output$modsummary_plot <-
+ renderPlot({
+  sum <- modules() %>%
+     count(Modules)
+   
+   ggplot(sum, aes(n))+
+     geom_histogram(binwidth = 1)+
+     xlab("Module Size")+
+     ylab("Number of Modules")
+
+ })
+
 
   
   # Single DB Function
   
   Out <- eventReactive(input$do,{
    
-         withProgress(message = 'Hold your horses', value = 0,{
+         withProgress(message = 'Please wait', value = 0,{
         
          modules <- read.csv(input$file$datapath,header=T)
        
@@ -133,92 +176,148 @@ output$Mess <- renderText({"Upload CSV to see your gene list here"})
            
             genes <- modules %>% filter(Modules==x) %>% dplyr::select(id)
             gene.id <- genes$id
-            output <- enrichr(gene.id, input$database)
-            Temp <- output[[1]] %>% arrange(P.value)
+            output <- enrichr(gene.id, input$database)[[1]]
+            if(nrow(output)>0){
+            Temp <- output %>% arrange(P.value)
             Temp <- Temp[1:input$rank,]
             Temp$module <- x
             Temp$module.size <- length(gene.id)
             range <- 1:10
             Temp$rank <- as.character(range[1:input$rank])
             Output <- rbind(Output,Temp)
-            Output <- Output %>% mutate(SIG=-log10(P.value))
           } 
-        })
-        Output %>% arrange(SIG)
+         }
+         })
+        Output %>% mutate(SIG=-log10(P.value)) %>% arrange(SIG)
         }) 
 		
    # Multiple DB Function
    
   Multi <- eventReactive(input$two,{
     
-           withProgress(message = 'Hold your horses', value = 0,{
+           withProgress(message = 'Please wait', value = 4,{
            
            modules <- read.csv(input$file$datapath,header=T)
            
            all.modules <- unique(modules$Modules)
            
-           summary <- data.frame()
  
-           for(x in all.modules){
-              genes <- modules %>% filter(Modules==x) %>% dplyr::select(id)
-              gene.id <- genes$id 
-              top.dbs <- vector()
-  
-              for(y in input$database){
-                 output <- enrichr(gene.id,y)
-                 Temp <- output[[1]] %>% arrange(Adjusted.P.value)
-                 Temp.term <- Temp$Term[1]
-                 Temp.term <- ifelse(Temp$Adjusted.P.value[1]<input$cutoff,Temp.term,"Non.Sig")
-                 top.dbs <- append(top.dbs,Temp.term)
-                 }
-  
-           mod.summary <- append(x,top.dbs)
-           summary <- rbind(summary,mod.summary)
-           colnames(summary) <- c("Module.ID",input$database)
-           }
-           }) 
-           summary
+           lapply(all.modules,function(x){
+              genes <- modules %>% filter(Modules==x) %>% dplyr::pull(id)
+              
+           lapply(input$database,function(db){
+                 output <- enrichr(genes,db)
+                 Temp <- output[[1]] %>% arrange(Adjusted.P.value) %>% .[1:input$rank,]
+                 Temp %>% mutate(Database=db)
+                 }) %>% bind_rows() %>% mutate(Module_ID=x) %>% mutate(Module.size=length(genes))
+
+           }) %>% bind_rows()
+           
+    
            })
+  })
 
   
  
   # Reactive output for single db function
   observeEvent(input$do,{ 
-     
-    options(digits = 3)
-    output$GO <- DT::renderDataTable({datatable(Out()[,c(10:12,1:4,7:8)])%>%
-                 formatRound(c(6:9),3)})
+
+    output$GO <- DT::renderDataTable({
+      
+      datatable(Out() %>% select(module,
+                                 module.size,
+                                 rank,
+                                 "Name"=Term,
+                                 Odds.Ratio,
+                                 P.value,
+                                 Adjusted.P.value,
+                                 Overlap,
+                                 Genes)
+      ) %>% formatRound(c(5:7),3)
+        })
     
   })
   
   
  # Bubble plot with ggplot2
   
-  output$Bubble <- renderPlot({
-    
-    ggplot(Out(),aes(x=Odds.Ratio,-log10(P.value),size=module.size,label=Term))+
-     geom_point(alpha=.25,shape=21,colour="black",fill="blue",stroke=2)+
-     geom_text(check_overlap=FALSE,aes(label=ifelse(-log10(P.value)>3,Term,""),size=1))+ #,fontface="bold"))+ #hjust=ifelse(pval>3,.1,.3315),vjust= ifelse(OR<60,.6,-.4),fontface="bold"))+
-      scale_size_continuous(range = c(3, 20),breaks=c(10,100,1000))+
-    # xlim(0,20)+
-      ylab("-log10(Adjusted.P.value)")+
-      xlab("Odds Ratio")+
-     labs(size="Module Size")+
-      theme(
-       panel.background = element_rect(colour="black",fill="white"),
-       legend.title=element_text(size=20),
-        legend.text=element_text(size=18),
-        axis.text.x=element_text(size=22,face="bold"),
-        axis.text.y=element_text(size=22,face="bold"),
-        axis.title.x=element_text(size=22,face="bold"),
-        axis.title.y = element_text(size=22,face="bold"),
-        panel.border = element_rect(colour = "black", fill=NA, size=2)
-      )
-})
+  output$bubble_databases <- renderUI({
+    req(is.null(input$database)==F)
+    selectInput("bubble_db","Choose Database or use top term across all",choices=c("all",input$database),selected = "all")
+  })
   
+  output$clickevent <- renderPrint({
+   event_data("plotly_click")
+  })
+  
+  
+  bubble_data <- reactive({Multi() %>% {if(input$bubble_db !="all") dplyr::filter(.,Database==input$bubble_db) else .} %>% group_by(Module_ID) %>%
+    dplyr::filter(Adjusted.P.value==min(Adjusted.P.value)) %>% distinct(Module_ID,Adjusted.P.value,.keep_all=TRUE)
+  })
+  
+  output$Bubble <- renderPlotly({
+    
+
+    
+    fig <- plot_ly(bubble_data(), x = ~Odds.Ratio,
+                   y = ~-log10(Adjusted.P.value),
+                   text = ~paste("Module ID:",Module_ID,"\n",Database,":",Term),
+                   type = 'scatter',
+                   mode = 'markers',
+                   marker = list(size = ~Module.size,
+                                 opacity = 0.5),
+                   color=~Database)
+    fig <- fig %>% layout(title = 'Top Ontologies Per Module',
+                          xaxis = list(showgrid = FALSE),
+                          yaxis = list(showgrid = FALSE))
+    
+    fig
+    
+  })
+    
+  observeEvent(event_data("plotly_click"),{
+    output$bubble_table <- renderDT({
+   
+    cords <- event_data("plotly_click")
+    
+    curve <- sort(input$database)[cords$curveNumber+1] 
+      
+    mod <- bubble_data() %>% filter(Database==curve) %>% .[cords$pointNumber+1,] %>% pull(Module_ID)
+  
+
+    #  mod <- Multi() %>%
+    #    filter(round(Odds.Ratio,digits = 1)==cords$x) %>%
+    #    pull(Module_ID)
+      
+      Multi() %>% filter(Module_ID==mod)
+    },rownames=FALSE)
+  })
+    
+    
+    
+    # ggplot(data,aes(x=Odds.Ratio,-log10(Adjusted.P.value),size=Module.size,label=Term))+
+    #  geom_point(alpha=.25,shape=21,colour="black",fill="blue",stroke=2)+
+    #  geom_text(check_overlap=FALSE,aes(label=ifelse(-log10(Adjusted.P.value)>1.3,Term,""),size=1))+ #,fontface="bold"))+ #hjust=ifelse(pval>3,.1,.3315),vjust= ifelse(OR<60,.6,-.4),fontface="bold"))+
+    #   scale_size_continuous(range = c(3, 20),breaks=c(10,100,1000))+
+    # # xlim(0,20)+
+    #   ylab("-log10(Adjusted.P.value)")+
+    #   xlab("Odds Ratio")+
+    #  labs(size="Module Size")+
+    #   theme(
+    #    panel.background = element_rect(colour="black",fill="white"),
+    #    legend.title=element_text(size=20),
+    #     legend.text=element_text(size=18),
+    #     axis.text.x=element_text(size=22,face="bold"),
+    #     axis.text.y=element_text(size=22,face="bold"),
+    #     axis.title.x=element_text(size=22,face="bold"),
+    #     axis.title.y = element_text(size=22,face="bold"),
+    #     panel.border = element_rect(colour = "black", fill=NA, size=2)
+    #   )
+
+  output$bubbleDT <- renderDT(bubble_data())
  
   
-  output$Ontology <- renderPlot({
+  output$Ontology <- renderPlotly({
     ggplot(Out(),aes(x=SIG,y=reorder(Term,SIG)))+
       geom_bar(stat="identity",fill="blue")+
       xlab("-log10(P.value)")+
@@ -246,7 +345,7 @@ output$Mess <- renderText({"Upload CSV to see your gene list here"})
   # Reactive output for multi-db function
   observeEvent(input$two,{
     
-    output$Multi <- DT::renderDataTable({datatable(Multi())}) 
+    output$Multi <- DT::renderDT({datatable(Multi(),rownames=FALSE)}) 
   
   })
   
