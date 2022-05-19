@@ -8,6 +8,8 @@ library(shinyIncubator)
 library(shinyWidgets)
 library(ggplot2)
 library(plotly)
+library(shinyjs)
+library(shinycssloaders)
 
  
 options(shiny.maxRequestSize=30*1024^2)  # max-csv upload set to 30 MB
@@ -16,7 +18,7 @@ dbs <- listEnrichrDbs() # Object with all Enrichr Database IDs
 ############ USER INTERFACE ##########
 
 ui <- dashboardPage(skin="red",
-                               
+                              
                  
 #### Sidebar header
 
@@ -31,88 +33,120 @@ ui <- dashboardPage(skin="red",
          
           width=300,
   
-            
+           
 # Input CSV             
             
             fileInput(inputId = "file",
                     label = "Upload modules as .csv",
                     accept = c(".csv"),placeholder = "Submit CSV to start"),
-                    
-          
+
 # Select Enrichr Database
             
             selectInput('database', label = 'Select Enrichr database(s)', 
-                       choices = dbs$libraryName,multiple=T),
+                       choices = dbs$libraryName,selected=NULL,multiple=T),
           
 # Set Rank in Single DB
-          
-            sliderInput(inputId = "rank",
-                  label="Set Single-DB # of ranked terms",
+ 
+              sliderInput(inputId = "rank",
+                  label="Max number of significant terms to return (per database)",
                   min=1,
                   max=10,
-                  value=1),
+                  value=1,width="100%"),
+             
+br(),
+
+
           
 # Set adj.p cut-off in Multi-DB
           
-            sliderInput(inputId = "cutoff",
-                  label="Adj. p val for Multi-DB function",
-                  min=0,
-                  step=0.001,
-                  max=1.001,
-                  value=0.05),
+            # sliderInput(inputId = "cutoff",
+            #       label="Adj. p val for Multi-DB function",
+            #       min=0,
+            #       step=0.001,
+            #       max=1.001,
+            #       value=0.05),
       
 # Action Buttons
           
-            actionButton("do", "Start Single-DB"),
-            actionButton("two","Start Multi-DB"),
+            div(style="padding-left: 20px;",actionBttn("run","Run Enrichr Query",color = "danger",style = "bordered",size = "lg")),
+           # tags$head(tags$style(".run{text-align: center !important;}")),
             br(),br(),
           # Download Buttons
-            div(downloadButton("downloadData", "Download Single-DB Results",class="fines"),style="text-align:center"),
-            tags$head(tags$style(".fines{color: black !important;}")),
-            br(),
-            br(),
-            div(downloadButton("downloadData.two","Download Multi-DB Results",class="fine"),style="text-align:center"),
+          #  div(downloadButton("downloadData", "Download Single-DB Results",class="fines"),style="text-align:center"),
+          #  tags$head(tags$style(".fines{color: black !important;}")),
+          #  br(),
+           # br(),
+            div(downloadButton("downloadData.two","Download Results",class="fine"),style="text-align:center"),
             tags$head(tags$style(".fine{color: black !important;}"))
+),
             
-        ),
 
 #### Main Panels    
         dashboardBody(
            
+          useShinyjs(),
         
-           tabsetPanel(
+           tabsetPanel(id = "Tabs",
              
-              tabPanel("Instructions",tags$img(src="Example.input.png",height=600,width=900)),
+              tabPanel("Introduction",
+                       
+                       
+                       h2("Welcome to the Richie Enrichr App"),br(),
+                       
+                       HTML("<h4><b>Purpose</b>: Perform exploratory enrichment analyses on multiple gene lists in Enrichr Web App<br><br>
+                            <ul><li><a href='https://maayanlab.cloud/Enrichr/' target='_blank'>Enrichr</a> is a web app developed
+                            by the Ma'ayan lab in the Department of Computational Genomics at Icahn School of Medicine at Mount Sinai.</li><br>
+                            <li>The Enrichr app does not take multiple gene lists as input nor make it convenient to download outputs across
+                            multiple databases: this app provides that functionality</li></ul></h4>"),
+                       br(),
+                       fluidRow(
+                         box(width = 4,solidHeader = TRUE,status="danger",
+                           HTML("Screenshot of <a href='https://maayanlab.cloud/Enrichr/' target='_blank'>Enrichr</a> App"),
+                           br(),br(),
+                           tags$img(src="Enrichr.png",width="100%")
+                           ),
+                         box(width=8,title="Instructions",solidHeader = TRUE,status="danger",
+                           tags$img(src="Example.input.png",width="100%")
+                         )
+                       )
+                       ),
              
               tabPanel("Your Modules",
                        
                        
-                       plotOutput("modsummary_plot"),
+                       plotOutput("modsummary_plot") %>% withSpinner(color = "#FF0000"),
                        
                        br(),
                        
-                       DT::dataTableOutput("Modules"),
+                       DT::dataTableOutput("Modules") %>% withSpinner(color = "#FF0000"),
                        
                        br(),
   
                        textOutput("Mess")),
              
-              tabPanel("Single-DB function",div(DT::dataTableOutput("GO"),
-                       style="font-size: 75%; width: 50%")),
              
-              tabPanel("Multi-DB function",DT::dataTableOutput("Multi")),
+              tabPanel("Table Outputs",DT::dataTableOutput("Multi") %>% withSpinner(color = "#FF0000")),
               
               tabPanel("Plots",
+                       fluidPage(
+                       br(),
                        
                        uiOutput("bubble_databases"),
                        
-                       textOutput("clickevent"),
+                      # textOutput("clickevent"),
                        
-                       plotlyOutput("Bubble"),
-                       DTOutput("bubbleDT"),
-                       DTOutput("bubble_table"),
+                       box(title="Top Terms for each Module",width=12,status="danger",solidHeader = TRUE,
+                       plotlyOutput("Bubble") %>% withSpinner(color = "#FF0000"),
+                       DTOutput("bubble_table")
+                       ),
+                           
+                      # DTOutput("bubbleDT"),
+                      
                        
-                       plotOutput("Ontology"))
+                       
+                       plotOutput("Ontology")
+                      )
+              )
             )
       
          )
@@ -120,7 +154,37 @@ ui <- dashboardPage(skin="red",
 
 ########### SERVER ###############
 
-server <- function(input,output) {
+server <- function(input,output,session) {
+  
+  
+  
+  # what tabs to show
+  
+  observe({
+    if(is.null(input$file)){
+      hideTab("Tabs","Your Modules")
+      
+    }else{showTab("Tabs","Your Modules")
+    }
+    
+    if(input$run<1){
+      hideTab("Tabs","Table Outputs")
+    }else{showTab("Tabs","Table Outputs")}
+    
+    if(input$run<1){
+      hideTab("Tabs","Plots")
+    }else{showTab("Tabs","Plots")}
+    
+    if(is.null(input$file) | is.null(input$database)){
+      shinyjs::disable("run")
+    }else{
+      shinyjs::enable("run")
+    }
+
+    
+    
+  })
+  
 
   # Set CSV Input to Data Frame
   
@@ -193,7 +257,7 @@ output$modsummary_plot <-
 		
    # Multiple DB Function
    
-  Multi <- eventReactive(input$two,{
+  Multi <- eventReactive(input$run,{
     
            withProgress(message = 'Please wait', value = 4,{
            
@@ -220,23 +284,23 @@ output$modsummary_plot <-
   
  
   # Reactive output for single db function
-  observeEvent(input$do,{ 
-
-    output$GO <- DT::renderDataTable({
-      
-      datatable(Out() %>% select(module,
-                                 module.size,
-                                 rank,
-                                 "Name"=Term,
-                                 Odds.Ratio,
-                                 P.value,
-                                 Adjusted.P.value,
-                                 Overlap,
-                                 Genes)
-      ) %>% formatRound(c(5:7),3)
-        })
-    
-  })
+  # observeEvent(input$do,{ 
+  # 
+  #   output$GO <- DT::renderDataTable({
+  #     
+  #     datatable(Out() %>% select(module,
+  #                                module.size,
+  #                                rank,
+  #                                "Name"=Term,
+  #                                Odds.Ratio,
+  #                                P.value,
+  #                                Adjusted.P.value,
+  #                                Overlap,
+  #                                Genes)
+  #     ) %>% formatRound(c(5:7),3)
+  #       })
+  #   
+  # })
   
   
  # Bubble plot with ggplot2
@@ -246,9 +310,9 @@ output$modsummary_plot <-
     selectInput("bubble_db","Choose Database or use top term across all",choices=c("all",input$database),selected = "all")
   })
   
-  output$clickevent <- renderPrint({
-   event_data("plotly_click")
-  })
+#  output$clickevent <- renderPrint({
+#   event_data("plotly_click")
+#  })
   
   
   bubble_data <- reactive({Multi() %>% {if(input$bubble_db !="all") dplyr::filter(.,Database==input$bubble_db) else .} %>% group_by(Module_ID) %>%
@@ -262,12 +326,15 @@ output$modsummary_plot <-
     fig <- plot_ly(bubble_data(), x = ~Odds.Ratio,
                    y = ~-log10(Adjusted.P.value),
                    text = ~paste("Module ID:",Module_ID,"\n",Database,":",Term),
+                   size = ~Module.size,
                    type = 'scatter',
                    mode = 'markers',
-                   marker = list(size = ~Module.size,
-                                 opacity = 0.5),
+                   marker = list(symbol = 'circle', sizemode = 'diameter',
+                                 opacity = 0.5,
+                                 line = list(width = 2, color = '#000000')),
+                   sizes = c(10, 50),
                    color=~Database)
-    fig <- fig %>% layout(title = 'Top Ontologies Per Module',
+    fig <- fig %>% layout(
                           xaxis = list(showgrid = FALSE),
                           yaxis = list(showgrid = FALSE))
     
@@ -281,8 +348,9 @@ output$modsummary_plot <-
     cords <- event_data("plotly_click")
     
     curve <- sort(input$database)[cords$curveNumber+1] 
+    
       
-    mod <- bubble_data() %>% filter(Database==curve) %>% .[cords$pointNumber+1,] %>% pull(Module_ID)
+    mod <- bubble_data() %>% {if(input$bubble_db=="all") dplyr::filter(.,Database==curve) else .} %>% .[cords$pointNumber+1,] %>% pull(Module_ID)
   
 
     #  mod <- Multi() %>%
@@ -290,7 +358,7 @@ output$modsummary_plot <-
     #    pull(Module_ID)
       
       Multi() %>% filter(Module_ID==mod)
-    },rownames=FALSE)
+    },rownames=FALSE,options=list(scrollX = TRUE))
   })
     
     
@@ -314,7 +382,7 @@ output$modsummary_plot <-
     #     panel.border = element_rect(colour = "black", fill=NA, size=2)
     #   )
 
-  output$bubbleDT <- renderDT(bubble_data())
+#  output$bubbleDT <- renderDT({bubble_data()},options=list(scrollX = TRUE))
  
   
   output$Ontology <- renderPlotly({
@@ -343,10 +411,16 @@ output$modsummary_plot <-
   
    
   # Reactive output for multi-db function
-  observeEvent(input$two,{
+  observeEvent(input$run,{
     
     output$Multi <- DT::renderDT({datatable(Multi(),rownames=FALSE)}) 
+    
+    updateTabsetPanel(session, inputId="Tabs", selected="Plots")
   
+  })
+  
+  observeEvent(input$file,ignoreInit = TRUE,{
+  updateTabsetPanel(session, inputId="Tabs", selected="Your Modules")
   })
   
 # Downloadable csvs of selected dataset ----
