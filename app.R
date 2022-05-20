@@ -10,7 +10,8 @@ library(ggplot2)
 library(plotly)
 library(shinyjs)
 library(shinycssloaders)
-
+library(tidyr)
+library(pheatmap)
  
 options(shiny.maxRequestSize=30*1024^2)  # max-csv upload set to 30 MB
 dbs <- listEnrichrDbs() # Object with all Enrichr Database IDs
@@ -76,8 +77,10 @@ br(),
           #  tags$head(tags$style(".fines{color: black !important;}")),
           #  br(),
            # br(),
-            div(downloadButton("downloadData.two","Download Results",class="fine"),style="text-align:center"),
+hidden(
+            div(id="DOWNLOAD_BUTTON",downloadButton("downloadData.two","Download Results",class="fine"),style="text-align:center"),
             tags$head(tags$style(".fine{color: black !important;}"))
+)
 ),
             
 
@@ -112,44 +115,92 @@ br(),
                        ),
              
               tabPanel("Your Modules",
-                       
-                       
-                       plotOutput("modsummary_plot") %>% withSpinner(color = "#FF0000"),
-                       
+                       fluidPage(
+                         
                        br(),
                        
-                       DT::dataTableOutput("Modules") %>% withSpinner(color = "#FF0000"),
+                    box(width=12,
+                        status = "danger",
+                        solidHeader = TRUE,
+                        valueBoxOutput("total_modules")
+                        ),
+                      
                        
-                       br(),
-  
-                       textOutput("Mess")),
+                       fluidRow(column(
+                         6,
+                         box(
+                           width = 12,
+                           status = "danger",
+                           solidHeader = TRUE,
+                           
+                           plotOutput("modsummary_plot") %>% withSpinner(color = "#FF0000")
+                         )
+                       ),
+                       column(
+                         6,
+                         box(
+                           width = 12,
+                           status = "danger",
+                           solidHeader = TRUE,
+                           DT::dataTableOutput("Modules") %>% withSpinner(color = "#FF0000")
+                         )
+                       )), 
+                       
+                       )
+                       ),
              
              
-              tabPanel("Table Outputs",DT::dataTableOutput("Multi") %>% withSpinner(color = "#FF0000")),
+              tabPanel("Table Outputs",
+                       fluidPage(
+                         br(),
+                       box(
+                         width = 12,
+                         status = "danger",
+                         solidHeader = TRUE,
+                       DT::dataTableOutput("Multi") %>% withSpinner(color = "#FF0000")
+                       )
+                       )),
               
               tabPanel("Plots",
                        fluidPage(
                        br(),
                        
-                       uiOutput("bubble_databases"),
-                       
+                      
                       # textOutput("clickevent"),
                        
                        box(title="Top Terms for each Module",width=12,status="danger",solidHeader = TRUE,
-                       plotlyOutput("Bubble") %>% withSpinner(color = "#FF0000"),
+                       plotlyOutput("Bubble",width = "90%") %>% withSpinner(color = "#FF0000"),
+                       uiOutput("bubble_databases"),
+                       br(),
                        DTOutput("bubble_table")
                        ),
+                      br(),
                            
                       # DTOutput("bubbleDT"),
                       
                        
-                       
-                       plotOutput("Ontology")
+                      box(title="Top Terms for each Database",width=12,status="danger",solidHeader = TRUE,
+                       uiOutput("ontology_mod_ui"),
+                       plotOutput("Ontology",width="80%") %>% withSpinner(color = "#FF0000")
+                      )
+                       )
+                      ),
+                      
+                      tabPanel("Heatmap",
+                               fluidPage(
+                                 br(),
+
+                     dropdownButton(status = "danger",icon=icon("gear"),size="xs",
+                           sliderInput("height","Height",min=0,max=5000,value=0),
+                           sliderInput("width","Width",min=0,max=5000,value=0)
+                           ),
+                          plotOutput("heatmap") %>% withSpinner(color = "#FF0000")
+                      )
+                      
                       )
               )
-            )
-      
-         )
+              )
+
 )
 
 ########### SERVER ###############
@@ -175,6 +226,10 @@ server <- function(input,output,session) {
       hideTab("Tabs","Plots")
     }else{showTab("Tabs","Plots")}
     
+    if(input$run<1){
+      hideTab("Tabs","Heatmap")
+    }else{showTab("Tabs","Heatmap")}
+    
     if(is.null(input$file) | is.null(input$database)){
       shinyjs::disable("run")
     }else{
@@ -198,28 +253,34 @@ modules <- reactive({
 output$Modules <- 
   
   DT::renderDT({
-    modules()
-    },filter="top",rownames=FALSE,options=list(pageLength=100)
+    modules() %>% setNames(.,c("Gene Name","Module ID"))
+    },filter="top",rownames=FALSE,options=list(pageLength=10)
   )
 
-output$Mess <- renderText({
-  if(is.null(modules())==F){
-  "Upload CSV to see your gene list here"
-    }
-  })                      
-  #output$Mess <- renderText("ok")
-  
 
-  # Module summary
+
+output$total_modules <- renderValueBox({
+  valueBox(value = length(unique(modules()$Modules)),
+           subtitle = "Total Modules",
+           color = "red",
+           icon = icon("network-wired",lib = "font-awesome")
+           )
+})
+
+
+
+# Module summary
+
 output$modsummary_plot <-
  renderPlot({
   sum <- modules() %>%
      count(Modules)
-   
-   ggplot(sum, aes(n))+
-     geom_histogram(binwidth = 1)+
+  
+  ggplot(sum, aes(n))+
+     geom_histogram(fill="black", color="red",binwidth = 1)+
      xlab("Module Size")+
-     ylab("Number of Modules")
+     ylab("Number of Modules")+
+     theme_classic()
 
  })
 
@@ -229,7 +290,6 @@ output$modsummary_plot <-
   
   Out <- eventReactive(input$do,{
    
-         withProgress(message = 'Please wait', value = 0,{
         
          modules <- read.csv(input$file$datapath,header=T)
        
@@ -251,16 +311,16 @@ output$modsummary_plot <-
             Output <- rbind(Output,Temp)
           } 
          }
-         })
+         
         Output %>% mutate(SIG=-log10(P.value)) %>% arrange(SIG)
         }) 
+  
+  
 		
    # Multiple DB Function
    
   Multi <- eventReactive(input$run,{
-    
-           withProgress(message = 'Please wait', value = 4,{
-           
+
            modules <- read.csv(input$file$datapath,header=T)
            
            all.modules <- unique(modules$Modules)
@@ -271,14 +331,22 @@ output$modsummary_plot <-
               
            lapply(input$database,function(db){
                  output <- enrichr(genes,db)
-                 Temp <- output[[1]] %>% arrange(Adjusted.P.value) %>% .[1:input$rank,]
+                 Temp <- output[[1]] %>% arrange(Adjusted.P.value) # %>% .[1:input$rank,]
+                 if(nrow(Temp)>0){
                  Temp %>% mutate(Database=db)
+                 }
                  }) %>% bind_rows() %>% mutate(Module_ID=x) %>% mutate(Module.size=length(genes))
 
-           }) %>% bind_rows()
+           }) %>% bind_rows() %>% select(Module_ID,
+                                         Module.size,
+                                         Database,
+                                         Term,
+                                         P.value,
+                                         Adjusted.P.value,
+                                         Odds.Ratio,
+                                         Genes)
            
-    
-           })
+
   })
 
   
@@ -335,13 +403,16 @@ output$modsummary_plot <-
                    sizes = c(10, 50),
                    color=~Database)
     fig <- fig %>% layout(
-                          xaxis = list(showgrid = FALSE),
-                          yaxis = list(showgrid = FALSE))
+                          xaxis = list(showline= T, linewidth=2, linecolor='black'),
+                          yaxis = list(showline= T, linewidth=2, linecolor='black'))
     
     fig
     
   })
-    
+   
+  # clicked_module
+  clicked_module <- reactiveValues(ID="")
+   
   observeEvent(event_data("plotly_click"),{
     output$bubble_table <- renderDT({
    
@@ -352,13 +423,21 @@ output$modsummary_plot <-
       
     mod <- bubble_data() %>% {if(input$bubble_db=="all") dplyr::filter(.,Database==curve) else .} %>% .[cords$pointNumber+1,] %>% pull(Module_ID)
   
-
+    clicked_module$ID <- mod
     #  mod <- Multi() %>%
     #    filter(round(Odds.Ratio,digits = 1)==cords$x) %>%
     #    pull(Module_ID)
       
-      Multi() %>% filter(Module_ID==mod)
-    },rownames=FALSE,options=list(scrollX = TRUE))
+   datatable(
+     Multi() %>%
+        filter(Module_ID==mod) %>%
+        select("Module ID"=Module_ID,Database,Term,"P-Value"=P.value,"Adjusted P-Value"=Adjusted.P.value,"Odds Ratio"=Odds.Ratio,Genes) %>%
+       arrange("Adjusted P-Value"),
+     rownames=FALSE,options=list(scrollX = TRUE)
+   ) %>% formatRound(c(4:6),digits=2) 
+    })
+    
+    
   })
     
     
@@ -383,11 +462,23 @@ output$modsummary_plot <-
     #   )
 
 #  output$bubbleDT <- renderDT({bubble_data()},options=list(scrollX = TRUE))
+  
+  output$ontology_mod_ui <-renderUI({
+    
+    selectInput("ontology_mod","Select Module",choices=unique(Multi()$Module_ID),selected=unique(Multi()$Module_ID)[1])
+  })
+  
  
   
-  output$Ontology <- renderPlotly({
-    ggplot(Out(),aes(x=SIG,y=reorder(Term,SIG)))+
-      geom_bar(stat="identity",fill="blue")+
+  output$Ontology <- renderPlot({
+    req(is.null(input$ontol))
+    
+   data <- Multi() %>% filter(Module_ID==input$ontology_mod) %>% group_by(Database) %>%
+     dplyr::filter(Adjusted.P.value==min(Adjusted.P.value)) %>% distinct(Module_ID,Adjusted.P.value,.keep_all=TRUE)
+    
+    ggplot(data,aes(x=-log10(Adjusted.P.value),y=reorder(Term,Adjusted.P.value)))+
+      geom_bar(stat="identity",aes(fill=Database))+
+     # geom_text(aes(label=Module_ID), position=position_dodge(width=0.9), vjust=-0.25)+
       xlab("-log10(P.value)")+
       ylab("Term")+
       theme(
@@ -407,15 +498,44 @@ output$modsummary_plot <-
       #  coord_flip()
   
   
+  ## Heatmap
+  
+  output$heatmap <- renderPlot({
+    
+    Terms <- Multi() %>% group_by(Module_ID,Database) %>% filter(Adjusted.P.value==min(Adjusted.P.value) & Adjusted.P.value<0.05) %>% distinct(Module_ID,Adjusted.P.value,.keep_all=TRUE) %>%
+      pull(Term)
+    data <- Multi() %>% dplyr::filter(Term %in% Terms) %>%
+      select(Term,Module_ID,Adjusted.P.value) %>% mutate(Adjusted.P.value=-log10(Adjusted.P.value)) %>%
+      pivot_wider(names_from =Module_ID,
+                  values_from = Adjusted.P.value) %>% tibble::column_to_rownames(var = "Term")
+
+    pheatmap(data %>% replace(is.na(.), 0),border_color = "black")
+
+  },width=function(){if(input$width>0){input$width}else{"auto"}},height=function(){if(input$height>0){input$height}else{"auto"}})
   
   
    
   # Reactive output for multi-db function
   observeEvent(input$run,{
     
-    output$Multi <- DT::renderDT({datatable(Multi(),rownames=FALSE)}) 
+    output$Multi <- DT::renderDT({datatable(Multi() %>% arrange(Adjusted.P.value) %>%
+                                              select("Module ID"=Module_ID,
+                                                     Database,
+                                                     Term,
+                                                     "P-Value"=P.value,
+                                                     "Adjusted P-Value"=Adjusted.P.value,
+                                                     "Odds Ratio"=Odds.Ratio,
+                                                     Genes),
+                                            rownames=FALSE,
+                                            filter="top",
+                                            options=list(pageLength=10)
+                                            ) %>% formatRound(4:6,digits=3)
+      }) 
     
     updateTabsetPanel(session, inputId="Tabs", selected="Plots")
+    
+    
+    shinyjs::show("DOWNLOAD_BUTTON")
   
   })
   
@@ -425,27 +545,27 @@ output$modsummary_plot <-
   
 # Downloadable csvs of selected dataset ----
   
-  # Single DB output
-  output$downloadData <- 
-  
-    downloadHandler(
-      filename = function() {
-      paste("report", ".csv", sep = "")
-    },
-      content = function(file) {
-      write.csv(Out(), file, row.names = TRUE)
-    }
-    )
+  # # Single DB output
+  # output$downloadData <- 
+  # 
+  #   downloadHandler(
+  #     filename = function() {
+  #     paste("report", ".csv", sep = "")
+  #   },
+  #     content = function(file) {
+  #     write.csv(Multi(), file, row.names = TRUE)
+  #   }
+  #   )
   
   # Multi DB output
 	output$downloadData.two <- 
 	  
 	  downloadHandler(
       filename = function() {
-      paste("report", ".csv", sep = "")
+      paste("RichieEnrichr_Results_",Sys.Date(), ".csv", sep = "")
     },
       content = function(file) {
-      write.csv(Multi(), file, row.names = TRUE)
+      write.csv(Multi(), file, row.names = FALSE)
       }
     )
 
