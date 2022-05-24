@@ -12,9 +12,12 @@ library(shinyjs)
 library(shinycssloaders)
 library(tidyr)
 library(pheatmap)
+library(RColorBrewer)
  
 options(shiny.maxRequestSize=30*1024^2)  # max-csv upload set to 30 MB
 dbs <- listEnrichrDbs() # Object with all Enrichr Database IDs
+
+COLORS <- rownames(brewer.pal.info)
 
 ############ USER INTERFACE ##########
 
@@ -47,12 +50,12 @@ ui <- dashboardPage(skin="red",
                        choices = dbs$libraryName,selected=NULL,multiple=T),
           
 # Set Rank in Single DB
- 
-              sliderInput(inputId = "rank",
-                  label="Max number of significant terms to return (per database)",
-                  min=1,
-                  max=10,
-                  value=1,width="100%"),
+              # 
+              # sliderInput(inputId = "rank",
+              #     label="Max number of significant terms to return (per database)",
+              #     min=1,
+              #     max=10,
+              #     value=1,width="100%"),
              
 br(),
 
@@ -96,7 +99,7 @@ hidden(
                        
                        h2("Welcome to the Richie Enrichr App"),br(),
                        
-                       HTML("<h4><b>Purpose</b>: Perform exploratory enrichment analyses on multiple gene lists in Enrichr Web App<br><br>
+                       HTML("<h4><b>Purpose</b>: Pull exploratory enrichment analyses from the Enrichr Web App for each unique gene list (module) provided<br><br>
                             <ul><li><a href='https://maayanlab.cloud/Enrichr/' target='_blank'>Enrichr</a> is a web app developed
                             by the Ma'ayan lab in the Department of Computational Genomics at Icahn School of Medicine at Mount Sinai.</li><br>
                             <li>The Enrichr app does not take multiple gene lists as input nor make it convenient to download outputs across
@@ -122,10 +125,11 @@ hidden(
                     box(width=12,
                         status = "danger",
                         solidHeader = TRUE,
-                        valueBoxOutput("total_modules")
+                        valueBoxOutput("total_modules"),
+                        infoBoxOutput("total_genes"),
+                        
                         ),
-                      
-                       
+
                        fluidRow(column(
                          6,
                          box(
@@ -133,7 +137,17 @@ hidden(
                            status = "danger",
                            solidHeader = TRUE,
                            
-                           plotOutput("modsummary_plot") %>% withSpinner(color = "#FF0000")
+                           plotOutput("modsummary_plot") %>% withSpinner(color = "#FF0000"),
+                           dropdownButton(circle = FALSE,label = "Exclude Modules",icon=icon("network-wired"),status="danger",up = TRUE,
+                                    multiInput(
+                                      inputId = "select_mods", label = "Select any modules to exclude from analysis",
+                                      choices = c("temp"),
+                                      options = list(
+                                        enable_search = TRUE,
+                                        non_selected_header = "All Modules",
+                                        selected_header = "Excluded Modules:"
+                                      ), width = "350px"
+                                    ))
                          )
                        ),
                        column(
@@ -145,7 +159,8 @@ hidden(
                            DT::dataTableOutput("Modules") %>% withSpinner(color = "#FF0000")
                          )
                        )), 
-                       
+                    
+                    
                        )
                        ),
              
@@ -161,7 +176,7 @@ hidden(
                        )
                        )),
               
-              tabPanel("Plots",
+              tabPanel("Summary Plots",
                        fluidPage(
                        br(),
                        
@@ -186,14 +201,32 @@ hidden(
                        )
                       ),
                       
-                      tabPanel("Heatmap",
+                      tabPanel("Enrichment Heatmap",
                                fluidPage(
                                  br(),
 
-                     dropdownButton(status = "danger",icon=icon("gear"),size="xs",
-                           sliderInput("height","Height",min=0,max=5000,value=0),
-                           sliderInput("width","Width",min=0,max=5000,value=0)
+                     dropdownButton(status = "danger",icon=icon("gears","font-awesome"),circle = FALSE,size="sm",label = "Modify heatmap",
+                                    box(status = "danger",solidHeader = TRUE,
+                           sliderInput("height","Height",min=0,max=2000,value=0),
+                           sliderInput("width","Width",min=0,max=2000,value=0),
+                           selectInput(inputId="color",
+                                       label="Change heatmap color palette",
+                                       choices=c("Default",COLORS),
+                                       selected = "Default"
                            ),
+                           sliderInput(inputId="breaks",
+                                       label="Adjust Color Breaks",
+                                       min=3,max=7,value=3,step = ),
+                           prettyCheckbox(
+                             inputId = "show_anno",
+                             label = "Show Database Annotation", 
+                             value = TRUE,
+                             status = "danger",
+                             shape = "curve"
+                           )
+                           
+                           )),
+                     br(),
                           plotOutput("heatmap") %>% withSpinner(color = "#FF0000")
                       )
                       
@@ -216,6 +249,7 @@ server <- function(input,output,session) {
       hideTab("Tabs","Your Modules")
       
     }else{showTab("Tabs","Your Modules")
+      updateMultiInput(session,"select_mods",choices=unique(modules()$Modules))
     }
     
     if(input$run<1){
@@ -223,12 +257,12 @@ server <- function(input,output,session) {
     }else{showTab("Tabs","Table Outputs")}
     
     if(input$run<1){
-      hideTab("Tabs","Plots")
-    }else{showTab("Tabs","Plots")}
+      hideTab("Tabs","Summary Plots")
+    }else{showTab("Tabs","Summary Plots")}
     
     if(input$run<1){
-      hideTab("Tabs","Heatmap")
-    }else{showTab("Tabs","Heatmap")}
+      hideTab("Tabs","Enrichment Heatmap")
+    }else{showTab("Tabs","Enrichment Heatmap")}
     
     if(is.null(input$file) | is.null(input$database)){
       shinyjs::disable("run")
@@ -260,14 +294,23 @@ output$Modules <-
 
 
 output$total_modules <- renderValueBox({
-  valueBox(value = length(unique(modules()$Modules)),
-           subtitle = "Total Modules",
+  all <- length(unique(modules()$Modules))
+  active <- all-length(input$select_mods)
+  
+  valueBox(value =paste(active,"of",all),
+           subtitle = "Active Modules",
            color = "red",
            icon = icon("network-wired",lib = "font-awesome")
            )
 })
 
-
+output$total_genes <- renderInfoBox({
+  infoBox(value = length(unique(modules()$id)),
+           title = "Unique Gene Names",
+           color = "red",
+           icon = icon("dna",lib = "font-awesome")
+  )
+})
 
 # Module summary
 
@@ -431,10 +474,15 @@ output$modsummary_plot <-
    datatable(
      Multi() %>%
         filter(Module_ID==mod) %>%
-        select("Module ID"=Module_ID,Database,Term,"P-Value"=P.value,"Adjusted P-Value"=Adjusted.P.value,"Odds Ratio"=Odds.Ratio,Genes) %>%
-       arrange("Adjusted P-Value"),
-     rownames=FALSE,options=list(scrollX = TRUE)
-   ) %>% formatRound(c(4:6),digits=2) 
+        arrange(Adjusted.P.value) %>%
+        select("Module ID"=Module_ID,
+               Database,
+               Term,
+               "P-Value"=P.value,
+               "Adjusted P-Value"=Adjusted.P.value,
+               "Odds Ratio"=Odds.Ratio,Genes),
+     rownames=FALSE,options=list(scrollX = TRUE),filter="top"
+   ) %>% formatRound(c(4:6),digits=3) 
     })
     
     
@@ -490,30 +538,57 @@ output$modsummary_plot <-
       )
     
   })
-      #  scale_fill_manual(name="Mileage", 
-      #                   labels = c("Above Average", "Below Average"), 
-      #                  values = c("above"="#00ba38", "below"="#f8766d")) + 
-      #labs(subtitle="Normalised mileage from 'mtcars'", 
-      #       title= "Diverging Bars") + 
-      #  coord_flip()
+   
   
   
-  ## Heatmap
   
   output$heatmap <- renderPlot({
     
     Terms <- Multi() %>% group_by(Module_ID,Database) %>% filter(Adjusted.P.value==min(Adjusted.P.value) & Adjusted.P.value<0.05) %>% distinct(Module_ID,Adjusted.P.value,.keep_all=TRUE) %>%
       pull(Term)
     data <- Multi() %>% dplyr::filter(Term %in% Terms) %>%
-      select(Term,Module_ID,Adjusted.P.value) %>% mutate(Adjusted.P.value=-log10(Adjusted.P.value)) %>%
+      select(Term,Database,Module_ID,Adjusted.P.value) %>% mutate(Adjusted.P.value=-log10(Adjusted.P.value)) %>%
       pivot_wider(names_from =Module_ID,
                   values_from = Adjusted.P.value) %>% tibble::column_to_rownames(var = "Term")
+    
+    annotation <- data %>% select(Database)
 
-    pheatmap(data %>% replace(is.na(.), 0),border_color = "black")
+    pheatmap(data %>% select(-Database) %>% replace(is.na(.), 0),
+             border_color = "black",
+             annotation_row = if(input$show_anno==TRUE){annotation}else{NA},
+             color=col.pal()
+             )
 
   },width=function(){if(input$width>0){input$width}else{"auto"}},height=function(){if(input$height>0){input$height}else{"auto"}})
   
   
+  
+  # For colors
+  col.pal <- reactive({if(input$color=="Default"){colorRampPalette(rev(brewer.pal(n = input$breaks, name =
+                                                                                    "RdYlBu")))(100)}else{colorRampPalette(rev(brewer.pal(n=input$breaks
+                                                                                                                                          ,name= input$color)))(100)}
+  })
+  
+  observeEvent(input$color,{if(input$color=="Default"){
+    updateSliderInput(session, "breaks", label = "Number of color breaks in heatmap",
+                      min=3,
+                      max=brewer.pal.info %>% filter(rownames(brewer.pal.info) %in% "RdYlBu") 
+                      %>% select(maxcolors) %>% .$maxcolors,
+                      value=7
+    )}
+    else{
+      
+      
+      
+      
+      updateSliderInput(session, "breaks", label = "Number of color breaks in heatmap",
+                        min=3,
+                        max=brewer.pal.info %>% filter(rownames(brewer.pal.info) %in% input$color) 
+                        %>% select(maxcolors) %>% .$maxcolors,
+                        value=brewer.pal.info %>% filter(rownames(brewer.pal.info) %in% input$color) 
+                        %>% select(maxcolors) %>% .$maxcolors
+      )}
+  }) 
    
   # Reactive output for multi-db function
   observeEvent(input$run,{
@@ -532,7 +607,7 @@ output$modsummary_plot <-
                                             ) %>% formatRound(4:6,digits=3)
       }) 
     
-    updateTabsetPanel(session, inputId="Tabs", selected="Plots")
+    updateTabsetPanel(session, inputId="Tabs", selected="Summary Plots")
     
     
     shinyjs::show("DOWNLOAD_BUTTON")
