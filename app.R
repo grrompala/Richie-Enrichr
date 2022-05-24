@@ -93,6 +93,9 @@ hidden(
           useShinyjs(),
         
            tabsetPanel(id = "Tabs",
+                       tags$head(
+                         tags$style(type='text/css', 
+                                    ".nav-tabs {font-size: 20px} ")),
              
               tabPanel("Introduction",
                        
@@ -102,8 +105,8 @@ hidden(
                        HTML("<h4><b>Purpose</b>: Pull exploratory enrichment analyses from the Enrichr Web App for each unique gene list (module) provided<br><br>
                             <ul><li><a href='https://maayanlab.cloud/Enrichr/' target='_blank'>Enrichr</a> is a web app developed
                             by the Ma'ayan lab in the Department of Computational Genomics at Icahn School of Medicine at Mount Sinai.</li><br>
-                            <li>The Enrichr app does not take multiple gene lists as input nor make it convenient to download outputs across
-                            multiple databases: this app provides that functionality</li></ul></h4>"),
+                            <li>The Enrichr app does not take multiple gene lists as input and is not convenient for downloading output tables across
+                            multiple databases: this Richie Enrichr app provides that functionality</li></ul></h4>"),
                        br(),
                        fluidRow(
                          box(width = 4,solidHeader = TRUE,status="danger",
@@ -206,7 +209,6 @@ hidden(
                                  br(),
 
                      dropdownButton(status = "danger",icon=icon("gears","font-awesome"),circle = FALSE,size="sm",label = "Modify heatmap",
-                                    box(status = "danger",solidHeader = TRUE,
                            sliderInput("height","Height",min=0,max=2000,value=0),
                            sliderInput("width","Width",min=0,max=2000,value=0),
                            selectInput(inputId="color",
@@ -217,6 +219,9 @@ hidden(
                            sliderInput(inputId="breaks",
                                        label="Adjust Color Breaks",
                                        min=3,max=7,value=3,step = ),
+                           numericInput("font_row","Font size: row",value = 12),
+                           numericInput("font_col","Font size: column",value=12),
+                           radioButtons("angle_col","Angel column label",choices = c(45,90),inline = TRUE,selected = 45),
                            prettyCheckbox(
                              inputId = "show_anno",
                              label = "Show Database Annotation", 
@@ -225,7 +230,7 @@ hidden(
                              shape = "curve"
                            )
                            
-                           )),
+                           ),
                      br(),
                           plotOutput("heatmap") %>% withSpinner(color = "#FF0000")
                       )
@@ -305,7 +310,13 @@ output$total_modules <- renderValueBox({
 })
 
 output$total_genes <- renderInfoBox({
-  infoBox(value = length(unique(modules()$id)),
+  
+  
+  if(is.null(input$select_mods)==F){
+  active <- modules() %>% filter(!(Modules %in% input$select_mods)) %>% pull(id)
+  }else{active <- modules()$id}
+  
+  infoBox(value = length(unique(active)),
            title = "Unique Gene Names",
            color = "red",
            icon = icon("dna",lib = "font-awesome")
@@ -320,10 +331,16 @@ output$modsummary_plot <-
      count(Modules)
   
   ggplot(sum, aes(n))+
-     geom_histogram(fill="black", color="red",binwidth = 1)+
+     geom_histogram(fill="red", color="black",binwidth=100)+
      xlab("Module Size")+
      ylab("Number of Modules")+
-     theme_classic()
+     theme_classic()+
+     theme(
+       axis.text.x = element_text(size = 14),
+       axis.text.y = element_text(size = 14),
+       axis.title.y = element_text(size = 16),
+       axis.title.x = element_text(size = 16)
+     )
 
  })
 
@@ -481,8 +498,8 @@ output$modsummary_plot <-
                "P-Value"=P.value,
                "Adjusted P-Value"=Adjusted.P.value,
                "Odds Ratio"=Odds.Ratio,Genes),
-     rownames=FALSE,options=list(scrollX = TRUE),filter="top"
-   ) %>% formatRound(c(4:6),digits=3) 
+     rownames=FALSE,filter="top",options=list(scrollX = TRUE),
+   ) %>% formatRound(c(4:6),digits=5) 
     })
     
     
@@ -556,7 +573,10 @@ output$modsummary_plot <-
     pheatmap(data %>% select(-Database) %>% replace(is.na(.), 0),
              border_color = "black",
              annotation_row = if(input$show_anno==TRUE){annotation}else{NA},
-             color=col.pal()
+             color=col.pal(),
+             fontsize_row = input$font_row,
+             fontsize_col = input$font_col,
+             angle_col = input$angle_col
              )
 
   },width=function(){if(input$width>0){input$width}else{"auto"}},height=function(){if(input$height>0){input$height}else{"auto"}})
@@ -603,8 +623,8 @@ output$modsummary_plot <-
                                                      Genes),
                                             rownames=FALSE,
                                             filter="top",
-                                            options=list(pageLength=10)
-                                            ) %>% formatRound(4:6,digits=3)
+                                            options=list(pageLength=10,scrollX=TRUE)
+                                            ) %>% formatRound(4:6,digits=5)
       }) 
     
     updateTabsetPanel(session, inputId="Tabs", selected="Summary Plots")
