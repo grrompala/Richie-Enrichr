@@ -249,12 +249,17 @@ server <- function(input,output,session) {
   
   # what tabs to show
   
+  observeEvent(input$file,{
+    updateMultiInput(session,"select_mods",choices=unique(FILE_MODULES()))
+  })
+  
+  
   observe({
     if(is.null(input$file)){
       hideTab("Tabs","Your Modules")
       
     }else{showTab("Tabs","Your Modules")
-      updateMultiInput(session,"select_mods",choices=unique(modules()$Modules))
+      
     }
     
     if(input$run<1){
@@ -282,9 +287,16 @@ server <- function(input,output,session) {
 
   # Set CSV Input to Data Frame
   
+  FILE_MODULES <- reactive({
+    req(input$file)
+    temp <- read.csv(input$file$datapath,header=T)
+    unique(temp$Modules)
+  })
+  
 modules <- reactive({
   req(input$file)
-  read.csv(input$file$datapath,header=T)
+  mod <- read.csv(input$file$datapath,header=T)
+  mod %>% filter(!(Modules %in% input$select_mods))
   })
 
   # Preview Modules after entering CSV
@@ -299,7 +311,7 @@ output$Modules <-
 
 
 output$total_modules <- renderValueBox({
-  all <- length(unique(modules()$Modules))
+  all <- length(FILE_MODULES())
   active <- all-length(input$select_mods)
   
   valueBox(value =paste(active,"of",all),
@@ -381,7 +393,8 @@ output$modsummary_plot <-
    
   Multi <- eventReactive(input$run,{
 
-           modules <- read.csv(input$file$datapath,header=T)
+           
+           modules <- modules()
            
            all.modules <- unique(modules$Modules)
            
